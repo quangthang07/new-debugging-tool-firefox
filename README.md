@@ -27,6 +27,7 @@ Event history: show all changes of that element
 CallStack: show call stack status when event happened
 ![overview](./images/overview.png)
 
-Note: you can click on text at left side of function to jump to JS code in Debugger panel.
+Note: you can click on text at right side of function to jump to JS code in Debugger panel.
+
 ![jump-to-jscode-in-debugger-panel](./images/jump-to-js-code.png)
 
