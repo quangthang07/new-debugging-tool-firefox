@@ -24,7 +24,8 @@ When you pick an element from web page, all of changes of that element will disp
 
 Event history: show all changes of that element
 
-CallStack: show call stack status when event happened
+Call stack: show call stack in JSEngine when event happened
+
 ![overview](./images/overview.png)
 
 Note: you can click on text at right side of function to jump to JS code in Debugger panel.
