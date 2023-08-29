@@ -1,0 +1,1432 @@
+diff --git a/devtools/client/fronts/node.js b/devtools/client/fronts/node.js
+--- a/devtools/client/fronts/node.js
++++ b/devtools/client/fronts/node.js
+@@ -446,6 +446,10 @@ class NodeFront extends FrontClassWithSp
+     return this._form.mutationBreakpoints;
+   }
+ 
++  get mutationLog() {
++    return this._form.mutationLog;
++  }
++
+   get pseudoClassLocks() {
+     return this._form.pseudoClassLocks || [];
+   }
+diff --git a/devtools/client/inspector/index.xhtml b/devtools/client/inspector/index.xhtml
+--- a/devtools/client/inspector/index.xhtml
++++ b/devtools/client/inspector/index.xhtml
+@@ -14,6 +14,7 @@
+   <link rel="stylesheet" href="chrome://devtools/skin/rules.css"/>
+   <link rel="stylesheet" href="chrome://devtools/skin/compatibility.css"/>
+   <link rel="stylesheet" href="chrome://devtools/skin/computed.css"/>
++  <link rel="stylesheet" href="chrome://devtools/skin/j2c.css"/>
+   <link rel="stylesheet" href="chrome://devtools/skin/changes.css"/>
+   <link rel="stylesheet" href="chrome://devtools/skin/fonts.css"/>
+   <link rel="stylesheet" href="chrome://devtools/skin/boxmodel.css"/>
+diff --git a/devtools/client/inspector/inspector.js b/devtools/client/inspector/inspector.js
+--- a/devtools/client/inspector/inspector.js
++++ b/devtools/client/inspector/inspector.js
+@@ -1108,6 +1108,10 @@ Inspector.prototype = {
+         const BoxModel = require("resource://devtools/client/inspector/boxmodel/box-model.js");
+         panel = new BoxModel(this, this.panelWin);
+         break;
++      case "jumptoconstructor":
++        const JumpToConstructor = this.browserRequire("resource://devtools/client/inspector/j2c/jumpToConstructor.js")
++        panel = new JumpToConstructor(this, this.panelWin);
++        break;
+       case "changesview":
+         const ChangesView = this.browserRequire(
+           "devtools/client/inspector/changes/ChangesView"
+@@ -1198,6 +1202,11 @@ Inspector.prototype = {
+     });
+ 
+     sidebarPanels.push({
++      id: "jumptoconstructor",
++      title: INSPECTOR_L10N.getStr("inspector.sidebar.jumptoconstructor"),
++    })
++
++    sidebarPanels.push({
+       id: "changesview",
+       title: INSPECTOR_L10N.getStr("inspector.sidebar.changesViewTitle"),
+     });
+diff --git a/devtools/client/inspector/j2c/actions/index.js b/devtools/client/inspector/j2c/actions/index.js
+new file mode 100644
+--- /dev/null
++++ b/devtools/client/inspector/j2c/actions/index.js
+@@ -0,0 +1,14 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++"use strict";
++const { createEnum } = require("resource://devtools/client/shared/enum.js");
++createEnum(
++  [
++    //ENABLE or DISABLE J2C when user select on ui
++    "J2C_ENABLE_DISABLE",
++    // Updates selectedNode when user selected new node in markup view
++    "J2C_UPDATE_SELECTED_NODE",
++  ],
++  module.exports
++);
+diff --git a/devtools/client/inspector/j2c/actions/j2c.js b/devtools/client/inspector/j2c/actions/j2c.js
+new file mode 100644
+--- /dev/null
++++ b/devtools/client/inspector/j2c/actions/j2c.js
+@@ -0,0 +1,45 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++"use strict";
++const {
++  J2C_UPDATE_SELECTED_NODE,
++  J2C_ENABLE_DISABLE,
++} = require("resource://devtools/client/inspector/j2c/actions/index.js");
++module.exports = {
++  /**
++   * Enable or disable j2c when user check the checkbox.
++   * @param  {Boolean} isEnabled
++   *         The flag to control the app is enabled or not.
++   */
++  j2cEnableAndDisable(isEnabled) {
++    return async ({ dispatch, getState }) => {
++      try {
++        dispatch({
++          type: J2C_ENABLE_DISABLE,
++          isEnabled,
++        });
++      } catch (error) {
++        console.log("Enable or disable failed!", error);
++      }
++    };
++  },
++
++  /**
++   * Updates new selectedNode when user clicked on new node in markup view.
++   * @param  {NodeFront} node
++   *         The node user clicked on.
++   */
++  j2cUpdateSelectedNode(node) {
++    return async ({ dispatch, getState }) => {
++      try {
++        dispatch({
++          type: J2C_UPDATE_SELECTED_NODE,
++          node,
++        });
++      } catch (error) {
++        console.log("Update selectedNode failed!", error);
++      }
++    };
++  },
++};
+diff --git a/devtools/client/inspector/j2c/actions/moz.build b/devtools/client/inspector/j2c/actions/moz.build
+new file mode 100644
+--- /dev/null
++++ b/devtools/client/inspector/j2c/actions/moz.build
+@@ -0,0 +1,8 @@
++# This Source Code Form is subject to the terms of the Mozilla Public
++# License, v. 2.0. If a copy of the MPL was not distributed with this
++# file, You can obtain one at http://mozilla.org/MPL/2.0/.
++
++DevToolsModules(
++    "index.js",
++    "j2c.js",
++)
+diff --git a/devtools/client/inspector/j2c/components/app.js b/devtools/client/inspector/j2c/components/app.js
+new file mode 100644
+--- /dev/null
++++ b/devtools/client/inspector/j2c/components/app.js
+@@ -0,0 +1,177 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++"use strict";
++const {
++  createFactory,
++  PureComponent,
++} = require("resource://devtools/client/shared/vendor/react.js");
++const dom = require("resource://devtools/client/shared/vendor/react-dom-factories.js");
++const PropTypes = require("resource://devtools/client/shared/vendor/react-prop-types.js");
++const {
++  connect,
++} = require("resource://devtools/client/shared/vendor/react-redux.js");
++const FluentReact = require("resource://devtools/client/shared/vendor/fluent-react.js");
++
++const EventView = createFactory(
++  require("resource://devtools/client/inspector/j2c/components/eventView.js")
++);
++
++loader.lazyGetter(this, "Rep", function() {
++  return require("resource://devtools/client/shared/components/reps/index.js")
++    .REPS.Rep;
++});
++loader.lazyGetter(this, "MODE", function() {
++  return require("resource://devtools/client/shared/components/reps/index.js")
++    .MODE;
++});
++loader.lazyRequireGetter(
++  this,
++  "translateNodeFrontToGrip",
++  "resource://devtools/client/inspector/shared/utils.js",
++  true
++);
++
++const {
++  highlightNode,
++  unhighlightNode,
++} = require("resource://devtools/client/inspector/boxmodel/actions/box-model-highlighter.js");
++
++class App extends PureComponent {
++  static propTypes = {
++    dispatch: PropTypes.func.isRequired,
++    inspector: PropTypes.object.isRequired,
++    selectedNode: PropTypes.object.isRequired,
++    setSelectedNode: PropTypes.func.isRequired,
++    isSettingsVisible: PropTypes.bool.isRequired,
++    isEnabled: PropTypes.bool.isRequired,
++    enableAndDisable: PropTypes.func.isRequired,
++    changeLog: PropTypes.array.isRequired,
++  };
++  constructor(props) {
++    super(props);
++    this.onInspectIconClick = this.onInspectIconClick.bind(this);
++  }
++
++  onInspectIconClick() {
++    const { selectedNode, setSelectedNode } = this.props;
++    setSelectedNode(selectedNode, { reason: "jump-to-constructor" });
++    selectedNode.scrollIntoView().catch(e => console.error(e));
++  }
++
++  disabledState() {
++    return dom.div(
++      {
++        className: "app-disabled-state",
++      },
++      dom.p({}, "Enable app and re-load page to inspect node's mutations")
++    );
++  }
++
++  enabledState() {
++    const { selectedNode, dispatch } = this.props;
++
++    return dom.div(
++      {
++        className: "app-enabled-state",
++      },
++      //  selected node
++      dom.div(
++        { className: "target-node-info" },
++        dom.span({ className: "node-title" }, "Selected node: "),
++        selectedNode
++          ? Rep({
++              defaultRep: Rep.ElementNode,
++              mode: MODE.TINY,
++              object: translateNodeFrontToGrip(selectedNode),
++              onDOMNodeMouseOut: () => dispatch(unhighlightNode()),
++              onDOMNodeMouseOver: () => dispatch(highlightNode(selectedNode)),
++              onInspectIconClick: (_, e) => {
++                e.stopPropagation();
++                this.onInspectIconClick();
++              },
++            })
++          : "Undefined"
++      ),
++      // events list
++      dom.div(
++        {
++          className: "events-list",
++        },
++        dom.span(
++          {
++            className: "list-title",
++          },
++          "Events history"
++        ),
++        selectedNode?.mutationLog
++          ? this.createDynamicEventUI(selectedNode.mutationLog)
++          : dom.div({ className: "no-events" }, "Has no dynamic events")
++      )
++    );
++  }
++
++  createDynamicEventUI(mutationLog) {
++    const { inspector, dispatch, selectedNode, setSelectedNode } = this.props;
++    return dom.div(
++      {},
++      mutationLog.map(event => {
++        const { name, stackTrace } = event;
++        return EventView({
++          inspector,
++          dispatch,
++          selectedNode,
++          setSelectedNode,
++          name,
++          stackTrace,
++        });
++      })
++    );
++  }
++
++  render() {
++    const { isEnabled, enableAndDisable } = this.props;
++    const disabledUI = this.disabledState();
++    const enabledUI = this.enabledState();
++
++    return dom.div(
++      {
++        className: "j2c-container",
++        role: "document",
++      },
++      // control btn
++      dom.div(
++        {
++          className: "j2c-control-btn",
++        },
++        dom.label(
++          {},
++          dom.input({
++            checked: isEnabled,
++            type: "checkbox",
++            value: "app-enable-checkbox",
++            onChange: enableAndDisable,
++          }),
++          "Enable/Disable"
++        )
++      ),
++      // content
++      dom.div(
++        {
++          className: "j2c-content",
++        },
++        isEnabled ? enabledUI : disabledUI
++      )
++    );
++  }
++}
++
++const mapStateToProps = state => {
++  return {
++    isSettingsVisible: state.jumptoconstructor.isSettingsVisible,
++    selectedNode: state.jumptoconstructor.selectedNode,
++    changeLog: state.jumptoconstructor.changeLog,
++    isEnabled: state.jumptoconstructor.isEnabled,
++  };
++};
++module.exports = FluentReact.withLocalization(connect(mapStateToProps)(App));
+diff --git a/devtools/client/inspector/j2c/components/eventList.js b/devtools/client/inspector/j2c/components/eventList.js
+new file mode 100644
+--- /dev/null
++++ b/devtools/client/inspector/j2c/components/eventList.js
+@@ -0,0 +1,76 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++"use strict";
++const {
++  createFactory,
++  createElement,
++  createRef,
++  Fragment,
++  PureComponent,
++} = require("resource://devtools/client/shared/vendor/react.js");
++const dom = require("resource://devtools/client/shared/vendor/react-dom-factories.js");
++const PropTypes = require("resource://devtools/client/shared/vendor/react-prop-types.js");
++const {
++  connect,
++} = require("resource://devtools/client/shared/vendor/react-redux.js");
++const { LocalizationHelper } = require("resource://devtools/shared/l10n.js");
++const EventView = createFactory(
++  require("resource://devtools/client/inspector/j2c/components/eventView.js")
++);
++
++const Accordion = createFactory(
++  require("resource://devtools/client/shared/components/Accordion.js")
++);
++
++class EventList extends PureComponent {
++  static propTypes = {
++    changeLog: PropTypes.array.isRequired,
++  };
++
++  constructor(props) {
++    super(props);
++    this.containerRef = createRef();
++  }
++
++  createEventItems() {
++    const { changeLog } = this.props;
++    const items = [];
++
++    changeLog.map(evt => {
++      const { id, name, stack } = evt;
++      const eventViewProps = {
++        name,
++        stack,
++        stackExpanded: false,
++      };
++
++      items.push({
++        component: EventView,
++        componentProps: eventViewProps,
++        contentClassName: "event-content",
++        key: id,
++        header: name,
++        opened: eventViewProps.stackExpanded,
++        onToggle: opened => {
++          eventViewProps.stackExpanded = opened;
++        },
++      });
++    });
++
++    return items;
++  }
++
++  render() {
++    const items = this.createEventItems();
++
++    return dom.div(
++      {
++        className: "event-list devtools-monospace",
++        ref: this.containerRef,
++      },
++      Accordion({ items })
++    );
++  }
++}
++module.exports = EventList;
+diff --git a/devtools/client/inspector/j2c/components/eventView.js b/devtools/client/inspector/j2c/components/eventView.js
+new file mode 100644
+--- /dev/null
++++ b/devtools/client/inspector/j2c/components/eventView.js
+@@ -0,0 +1,87 @@
++/* eslint-disable react/prop-types */
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++"use strict";
++const {
++  createFactory,
++  PureComponent,
++} = require("resource://devtools/client/shared/vendor/react.js");
++const dom = require("resource://devtools/client/shared/vendor/react-dom-factories.js");
++const PropTypes = require("resource://devtools/client/shared/vendor/react-prop-types.js");
++
++const StackView = createFactory(
++  require("resource://devtools/client/inspector/j2c/components/stackView.js")
++);
++class EventView extends PureComponent {
++  constructor(props) {
++    super(props);
++    this.state = {
++      isOpen: false,
++    };
++
++    this.onToggleExpander = this.onToggleExpander.bind(this);
++  }
++
++  static PropTypes = {
++    inspector: PropTypes.object.isRequired,
++    dispatch: PropTypes.func.isRequired,
++    selectedNode: PropTypes.object.isRequired,
++    setSelectedNode: PropTypes.func.isRequired,
++    name: PropTypes.string.isRequired,
++    stackTrace: PropTypes.array.isRequired,
++    darkStripe: PropTypes.bool,
++  };
++
++  onToggleExpander(event) {
++    this.setState({
++      isOpen: !this.state.isOpen,
++    });
++    event.stopPropagation();
++  }
++
++  render() {
++    const {
++      inspector,
++      dispatch,
++      selectedNode,
++      setSelectedNode,
++      name,
++      stackTrace,
++      darkStripe,
++    } = this.props;
++
++    return dom.div(
++      {
++        className: "event-view" + `${darkStripe ? "dark-stripe" : ""}`,
++        ref: this.containerRef,
++        onDoubleClick: this.onToggleExpander,
++      },
++      dom.div(
++        {
++          className: "event-name",
++        },
++        dom.span({
++          className: "layout-properties-expander theme-twisty",
++          open: this.state.isOpen,
++          role: "button",
++          onClick: this.onToggleExpander,
++        }),
++        name
++      ),
++      dom.div(
++        {
++          hidden: !this.state.isOpen,
++        },
++        StackView({
++          inspector,
++          dispatch,
++          selectedNode,
++          setSelectedNode,
++          stackTrace,
++        })
++      )
++    );
++  }
++}
++module.exports = EventView;
+diff --git a/devtools/client/inspector/j2c/components/frameView.js b/devtools/client/inspector/j2c/components/frameView.js
+new file mode 100644
+--- /dev/null
++++ b/devtools/client/inspector/j2c/components/frameView.js
+@@ -0,0 +1,110 @@
++/* eslint-disable react/prop-types */
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++"use strict";
++const {
++  createElement,
++  Fragment,
++  PureComponent,
++} = require("resource://devtools/client/shared/vendor/react.js");
++const dom = require("resource://devtools/client/shared/vendor/react-dom-factories.js");
++const PropTypes = require("resource://devtools/client/shared/vendor/react-prop-types.js");
++
++// loader.lazyGetter(this, "Rep", function() {
++//   return require("resource://devtools/client/shared/components/reps/index.js")
++//     .REPS.Rep;
++// });
++// loader.lazyGetter(this, "MODE", function() {
++//   return require("resource://devtools/client/shared/components/reps/index.js")
++//     .MODE;
++// });
++
++// const {
++//   highlightNode,
++//   unhighlightNode,
++// } = require("resource://devtools/client/inspector/boxmodel/actions/box-model-highlighter.js");
++
++class FrameView extends PureComponent {
++  static get PropTypes() {
++    return {
++      inspector: PropTypes.object.isRequired,
++      dispatch: PropTypes.func.isRequired,
++      selectedNode: PropTypes.object.isRequired,
++      setSelectedNode: PropTypes.func.isRequired,
++      url: PropTypes.string.isRequired,
++      sourceId: PropTypes.string.isRequired,
++      functionName: PropTypes.string.isRequired,
++      line: PropTypes.number.isRequired,
++      column: PropTypes.number.isRequired,
++    };
++  }
++
++  constructor(props) {
++    super(props);
++    this.jumpToSourceInDebugger = this.jumpToSourceInDebugger.bind(this);
++  }
++
++  jumpToSourceInDebugger() {
++    const { inspector, url, sourceId, line, column } = this.props;
++    inspector.toolbox.viewSourceInDebugger(
++      url,
++      line,
++      column,
++      sourceId,
++      "jump_to_constructor"
++    );
++  }
++
++  onInspectIconClick() {
++    const { selectedNode, setSelectedNode } = this.props;
++    setSelectedNode(selectedNode, { reason: "jump-to-constructor" });
++    selectedNode.scrollIntoView().catch(e => console.error(e));
++  }
++
++  render() {
++    const {
++      // dispatch,
++      // selectedNode,
++      url,
++      sourceId,
++      functionName,
++      line,
++      column,
++    } = this.props;
++
++    return createElement(
++      Fragment,
++      null,
++      dom.div(
++        { className: "frame-view devtools-monospace" },
++        dom.span(
++          {
++            className: "function-name",
++          },
++          functionName ? functionName : "anonymous"
++        ),
++        dom.span(
++          {
++            className: "url",
++            onClick: this.jumpToSourceInDebugger,
++          },
++          `${
++            url ? url.split("/").pop() : sourceId.split("/").pop()
++          }:${line}:${column}`
++        )
++        // Rep({
++        //   default: Rep.ElementNode,
++        //   mode: MODE.TINY,
++        //   onDOMNodeMouseOut: () => dispatch(unhighlightNode()),
++        //   onDOMNodeMouseOver: () => dispatch(highlightNode(selectedNode)),
++        //   onInspectIconClick: (_, e) => {
++        //     e.stopPropagation();
++        //     this.onInspectIconClick();
++        //   }
++        // })
++      )
++    );
++  }
++}
++module.exports = FrameView;
+diff --git a/devtools/client/inspector/j2c/components/moz.build b/devtools/client/inspector/j2c/components/moz.build
+new file mode 100644
+--- /dev/null
++++ b/devtools/client/inspector/j2c/components/moz.build
+@@ -0,0 +1,11 @@
++# This Source Code Form is subject to the terms of the Mozilla Public
++# License, v. 2.0. If a copy of the MPL was not distributed with this
++# file, You can obtain one at http://mozilla.org/MPL/2.0/.
++
++DevToolsModules(
++    "app.js",
++    "eventList.js",
++    "eventView.js",
++    "frameView.js",
++    "stackView.js",
++)
+diff --git a/devtools/client/inspector/j2c/components/stackView.js b/devtools/client/inspector/j2c/components/stackView.js
+new file mode 100644
+--- /dev/null
++++ b/devtools/client/inspector/j2c/components/stackView.js
+@@ -0,0 +1,92 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++"use strict";
++const {
++  createFactory,
++  PureComponent,
++} = require("resource://devtools/client/shared/vendor/react.js");
++const dom = require("resource://devtools/client/shared/vendor/react-dom-factories.js");
++const PropTypes = require("resource://devtools/client/shared/vendor/react-prop-types.js");
++
++const FrameView = createFactory(
++  require("resource://devtools/client/inspector/j2c/components/frameView.js")
++);
++class StackView extends PureComponent {
++  static get PropTypes() {
++    return {
++      inspector: PropTypes.object.isRequired,
++      dispatch: PropTypes.func.isRequired,
++      selectedNode: PropTypes.object.isRequired,
++      setSelectedNode: PropTypes.func.isRequired,
++      stackTrace: PropTypes.array.isRequired,
++    };
++  }
++
++  constructor(props) {
++    super(props);
++    this.state = {
++      isOpen: false,
++    };
++
++    this.onToggleExpander = this.onToggleExpander.bind(this);
++  }
++
++  onToggleExpander(event) {
++    this.setState({
++      isOpen: !this.state.isOpen,
++    });
++    event.stopPropagation();
++  }
++
++  render() {
++    const {
++      inspector,
++      dispatch,
++      selectedNode,
++      setSelectedNode,
++      stackTrace,
++    } = this.props;
++
++    return dom.div(
++      {
++        className: "stack-view",
++      },
++      dom.div(
++        {
++          className: "j2c-call-stack-expander",
++          role: "heading",
++          "aria-level": "3",
++          onDoubleClick: this.onToggleExpander,
++        },
++        dom.span({
++          className: "layout-properties-expander theme-twisty",
++          open: this.state.isOpen,
++          role: "button",
++          onClick: this.onToggleExpander,
++        }),
++        "Call stack"
++      ),
++      dom.div(
++        {
++          className: "frames-list",
++          hidden: !this.state.isOpen,
++        },
++        stackTrace.map(frame => {
++          return FrameView({
++            inspector,
++            dispatch,
++            selectedNode,
++            setSelectedNode,
++            url: frame.url,
++            sourceId: frame.sourceId,
++            functionName: frame.functionName,
++            line: frame.line,
++            column: frame.column,
++          });
++        })
++      )
++    );
++  }
++}
++module.exports = StackView;
+diff --git a/devtools/client/inspector/j2c/jumpToConstructor.js b/devtools/client/inspector/j2c/jumpToConstructor.js
+new file mode 100644
+--- /dev/null
++++ b/devtools/client/inspector/j2c/jumpToConstructor.js
+@@ -0,0 +1,113 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
++ */
++"use strict";
++
++const j2cReducer = require("resource://devtools/client/inspector/j2c/reducers/j2c.js");
++const {
++  j2cEnableAndDisable,
++  j2cUpdateSelectedNode,
++} = require("resource://devtools/client/inspector/j2c/actions/j2c.js");
++
++const {
++  createFactory,
++  createElement,
++} = require("resource://devtools/client/shared/vendor/react.js");
++const {
++  Provider,
++} = require("resource://devtools/client/shared/vendor/react-redux.js");
++const FluentReact = require("resource://devtools/client/shared/vendor/fluent-react.js");
++const LocalizationProvider = createFactory(FluentReact.LocalizationProvider);
++const App = createFactory(
++  require("resource://devtools/client/inspector/j2c/components/app.js")
++);
++const { LocalizationHelper } = require("resource://devtools/shared/l10n.js");
++const INSPECTOR_L10N = new LocalizationHelper(
++  "devtools/client/locales/inspector.properties"
++);
++
++class JumpToConstructor {
++  constructor(inspector, window) {
++    this.inspector = inspector;
++    this.document = window.document;
++    this.store = inspector.store;
++
++    this.store.injectReducer("jumptoconstructor", j2cReducer);
++    this._parseMarkup = this._parseMarkup.bind(this);
++    this.enableAndDisable = this.enableAndDisable.bind(this);
++    this._onSelectedNodeChanged = this._onSelectedNodeChanged.bind(this);
++
++    this.init();
++  }
++  init() {
++    if (!this.inspector) {
++      return;
++    }
++    const { setSelectedNode } = this.inspector.getCommonComponentProps();
++    const app = App({
++      dispatch: this.store.dispatch,
++      inspector: this.inspector,
++      setSelectedNode,
++      enableAndDisable: this.enableAndDisable,
++    });
++    const provider = createElement(
++      Provider,
++      {
++        id: "jumptoconstructor",
++        key: "jumptoconstructor",
++        store: this.store,
++        title: INSPECTOR_L10N.getStr("inspector.sidebar.jumptoconstructor"),
++      },
++      LocalizationProvider(
++        {
++          bundles: this.inspector.fluentL10n.getBundles(),
++          parseMarkup: this._parseMarkup,
++        },
++        app
++      )
++    );
++    // Expose the provider to let inspector.js use it in setupSidebar.
++    this.provider = provider;
++
++    // start listening on new node selected by user in markup-view
++    this.inspector.selection.on("new-node-front", this._onSelectedNodeChanged);
++  }
++
++  _parseMarkup(str) {
++    // Using a BrowserLoader for the inspector is currently blocked on performance regressions,
++    // see Bug 1471853
++    throw new Error(
++      "The inspector cannot use tags in ftl strings because it does not run in a BrowserLoader"
++    );
++  }
++
++  async _onSelectedNodeChanged() {
++    const selectedNode = this.inspector.selection.nodeFront;
++
++    this.store.dispatch(j2cUpdateSelectedNode(selectedNode));
++  }
++
++  async enableAndDisable() {
++    const { isEnabled } = this.store.getState().jumptoconstructor;
++    this.store.dispatch(j2cEnableAndDisable(!isEnabled));
++    await this.inspector.commands.threadConfigurationCommand.updateConfiguration(
++      {
++        enableJumpToConstructor: !isEnabled,
++      }
++    );
++  }
++
++  /**
++   * Destruction function called when the inspector is destroyed. Cleans up references.
++   */
++  destroy() {
++    // Stop listening on new node selected by user in markup-view
++    this.inspector.selection.off("new-node-front", this._onSelectedNodeChanged);
++
++    this.document = null;
++    this.inspector = null;
++    this.store = null;
++  }
++}
++module.exports = JumpToConstructor;
+diff --git a/devtools/client/inspector/j2c/moz.build b/devtools/client/inspector/j2c/moz.build
+new file mode 100644
+--- /dev/null
++++ b/devtools/client/inspector/j2c/moz.build
+@@ -0,0 +1,13 @@
++# This Source Code Form is subject to the terms of the Mozilla Public
++# License, v. 2.0. If a copy of the MPL was not distributed with this
++# file, You can obtain one at http://mozilla.org/MPL/2.0/.
++
++DIRS += [
++    "components",
++    "actions",
++    "reducers",
++]
++
++DevToolsModules(
++    "jumpToConstructor.js",
++)
+diff --git a/devtools/client/inspector/j2c/reducers/j2c.js b/devtools/client/inspector/j2c/reducers/j2c.js
+new file mode 100644
+--- /dev/null
++++ b/devtools/client/inspector/j2c/reducers/j2c.js
+@@ -0,0 +1,28 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++"use strict";
++const {
++  J2C_UPDATE_SELECTED_NODE,
++  J2C_ENABLE_DISABLE,
++} = require("resource://devtools/client/inspector/j2c/actions/index.js");
++const INITIAL_STATE = {
++  isSettingsVisible: false,
++  selectedNode: null,
++  isEnabled: false,
++};
++const reducers = {
++  [J2C_ENABLE_DISABLE](state, { isEnabled }) {
++    return Object.assign({}, state, { isEnabled });
++  },
++  [J2C_UPDATE_SELECTED_NODE](state, { node }) {
++    return Object.assign({}, state, { selectedNode: node });
++  },
++};
++module.exports = function(state = INITIAL_STATE, action) {
++  const reducer = reducers[action.type];
++  if (!reducer) {
++    return state;
++  }
++  return reducer(state, action);
++};
+diff --git a/devtools/client/inspector/j2c/reducers/moz.build b/devtools/client/inspector/j2c/reducers/moz.build
+new file mode 100644
+--- /dev/null
++++ b/devtools/client/inspector/j2c/reducers/moz.build
+@@ -0,0 +1,7 @@
++# This Source Code Form is subject to the terms of the Mozilla Public
++# License, v. 2.0. If a copy of the MPL was not distributed with this
++# file, You can obtain one at http://mozilla.org/MPL/2.0/.
++
++DevToolsModules(
++    "j2c.js",
++)
+diff --git a/devtools/client/inspector/moz.build b/devtools/client/inspector/moz.build
+--- a/devtools/client/inspector/moz.build
++++ b/devtools/client/inspector/moz.build
+@@ -17,6 +17,7 @@ DIRS += [
+     "markup",
+     "rules",
+     "shared",
++    "j2c",
+ ]
+ 
+ DevToolsModules(
+diff --git a/devtools/client/jar.mn b/devtools/client/jar.mn
+--- a/devtools/client/jar.mn
++++ b/devtools/client/jar.mn
+@@ -105,6 +105,7 @@ devtools.jar:
+     skin/compatibility.css (themes/compatibility.css)
+     skin/computed.css (themes/computed.css)
+     skin/layout.css (themes/layout.css)
++    skin/j2c.css (themes/j2c.css)
+     skin/images/arrow-e.svg (themes/images/arrow-e.svg)
+     skin/images/search-clear.svg (themes/images/search-clear.svg)
+     skin/images/reload.svg (themes/images/reload.svg)
+diff --git a/devtools/client/locales/en-US/inspector.properties b/devtools/client/locales/en-US/inspector.properties
+--- a/devtools/client/locales/en-US/inspector.properties
++++ b/devtools/client/locales/en-US/inspector.properties
+@@ -442,6 +442,12 @@ inspector.sidebar.ruleViewTitle=Rules
+ # used in the page.
+ inspector.sidebar.computedViewTitle=Computed
+ 
++# LOCALIZATION NOTE (inspector.sidebar.jumptoconstructor):
++# This is the title shown in a tab in the side panel of the Inspector panel
++# that corresponds to the tool displaying the list of computed CSS values
++# used in the page.
++inspector.sidebar.jumptoconstructor = J2C&M
++
+ # LOCALIZATION NOTE (inspector.sidebar.layoutViewTitle2):
+ # This is the title shown in a tab in the side panel of the Inspector panel
+ # that corresponds to the tool displaying layout information defined in the page.
+diff --git a/devtools/client/themes/j2c.css b/devtools/client/themes/j2c.css
+new file mode 100644
+--- /dev/null
++++ b/devtools/client/themes/j2c.css
+@@ -0,0 +1,102 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++.j2c-container {
++  height: 100%;
++  width: 100%;
++  overflow-x: auto;
++  overflow-y: auto;
++  min-width: 200px;
++
++  font-size: 12px;
++  line-height: 16px;
++  /* padding: 2px 3px; */
++  /* margin-inline-start: 16px; */
++  user-select: none;
++}
++
++/**
++ * Common styles for the j2c container
++ */
++
++.j2c-container input {
++  margin-inline-end: 7px;
++  vertical-align: middle;
++}
++
++.j2c-container span {
++  display: inline-block;
++
++}
++
++/* j2c enable/disable button */
++.j2c-control-btn {
++  padding-inline: 16px;
++  padding-block: 2px;
++  background-color: rgba(247, 247, 247, 0.8);
++  border-bottom: 1px solid var(--theme-highlight-gray);
++}
++.j2c-control-btn label {
++  display: inline-block;
++  vertical-align: middle;
++}
++/* app disabled state */
++.app-disabled-state, .no-events {
++  padding: 6px 20px;
++  text-align: center;
++  font-style: italic;
++  color: var(--theme-body-color);
++  white-space: normal;
++}
++
++/* j2c-content */
++.j2c-content {
++  margin-inline-start: 16px;
++  padding-block-start: 2px;
++}
++
++.target-node-info .node-title {
++  margin-inline-end: 8px;
++}
++
++
++.event-list {
++  padding-block-start: 2px;
++}
++
++.event-view {
++  margin-inline-start: 8px;
++  padding-block-start: 2px;
++}
++.stack-view {
++  margin-inline-start: 8px;
++  padding-block-start: 2px;
++}
++
++/* Call stack expander */
++.j2c-call-stack-expander {
++  vertical-align: middle;
++  display: inline-block;
++}
++
++.frames-list {
++  margin-inline: 8px 1px;
++}
++.frame-view {
++  margin-block-start: 2px;
++  display: flex;
++  justify-content: space-between;
++}
++.frame-view:last-child {
++  margin-block-end: 2px;
++}
++.frame-view .function-name {
++  color: var(--theme-stack-trace-text);
++}
++.frame-view .url {
++  color: var(--theme-comment);
++}
++.frame-view .url:hover {
++  text-decoration: underline var(--theme-comment);
++}
+diff --git a/devtools/server/actors/inspector/node.js b/devtools/server/actors/inspector/node.js
+--- a/devtools/server/actors/inspector/node.js
++++ b/devtools/server/actors/inspector/node.js
+@@ -220,6 +220,7 @@ class NodeActor extends Actor {
+       isDirectShadowHostChild: isDirectShadowHostChild(this.rawNode),
+       pseudoClassLocks: this.writePseudoClassLocks(),
+       mutationBreakpoints: this.walker.getMutationBreakpoints(this),
++      mutationLog: this.rawNode.mutationLog,
+ 
+       isDisplayed: this.isDisplayed,
+       isInHTMLDocument:
+diff --git a/devtools/server/actors/thread-configuration.js b/devtools/server/actors/thread-configuration.js
+--- a/devtools/server/actors/thread-configuration.js
++++ b/devtools/server/actors/thread-configuration.js
+@@ -18,6 +18,8 @@ const {
+ 
+ // List of options supported by this thread configuration actor.
+ const SUPPORTED_OPTIONS = {
++  // Enable Jump to Constructor(J2C) in inspector's sidebar panel
++  enableJumpToConstructor: true,
+   // Enable pausing on exceptions.
+   pauseOnExceptions: true,
+   // Disable pausing on caught exceptions.
+diff --git a/devtools/server/actors/thread.js b/devtools/server/actors/thread.js
+--- a/devtools/server/actors/thread.js
++++ b/devtools/server/actors/thread.js
+@@ -196,6 +196,10 @@ class ThreadActor extends Actor {
+     this._pauseOverlay = null;
+     this._priorPause = null;
+ 
++    // Used for Jump to Constructor
++    this.chromeEventHandler = parent.chromeEventHandler;
++    this._j2cTrackingNodes = [];
++
+     this._activeEventBreakpoints = new Set();
+     this._frameActorMap = new WeakMap();
+     this._debuggerSourcesSeen = new WeakSet();
+@@ -232,6 +236,9 @@ class ThreadActor extends Actor {
+     this._onWindowReady = this._onWindowReady.bind(this);
+     this._onWillNavigate = this._onWillNavigate.bind(this);
+     this._onNavigate = this._onNavigate.bind(this);
++    this.onNewElementCreated = this.onNewElementCreated.bind(this);
++    this.onNewChildInsertedIntoNode = this.onNewChildInsertedIntoNode.bind(this);
++    this.onAttributeModifiedIntoNode = this.onAttributeModifiedIntoNode.bind(this);
+ 
+     this._parent.on("window-ready", this._onWindowReady);
+     this._parent.on("will-navigate", this._onWillNavigate);
+@@ -367,6 +374,14 @@ class ThreadActor extends Actor {
+     this._dbg = null;
+     this._state = STATES.EXITED;
+ 
++    // disable mutation tracking on all nodes used by j2c
++    // this._j2cTrackingNodes.map(node => {
++    //   node.devToolsWatchingDOMMutationsOnNode = false;
++    // });
++    // this._j2cTrackingNodes = [];
++    // this._J2CIsEnaled = false;
++    this.enableAndDisableJumpToConstructor(false); // make sure that remove all J2CM listener on this threadActor
++
+     super.destroy();
+   }
+ 
+@@ -815,6 +830,10 @@ class ThreadActor extends Actor {
+       this.setActiveEventBreakpoints(options.eventBreakpoints);
+     }
+ 
++    if (!this._J2CIsEnaled) {
++      this.enableAndDisableJumpToConstructor(options.enableJumpToConstructor);
++    }
++
+     this.maybePauseOnExceptions();
+   }
+ 
+@@ -2005,6 +2024,160 @@ class ThreadActor extends Actor {
+   }
+ 
+   /**
++   * Enable or disable jump to constructor app when user selected on app'ui.
++   */
++  enableAndDisableJumpToConstructor(isEnabled) {
++    if (this._parent.isDestroyed()) {
++      return;
++    }
++    if (isEnabled) {
++      this.global.document.devToolsWatchingDOMMutationsOnNode = true;
++      this._j2cTrackingNodes.push(this.global.document);
++      this._J2CIsEnaled = true; // flat which threadActor uses to see j2c is enabled or not
++
++      this.chromeEventHandler.addEventListener(
++        "devtoolsNewElementCreated",
++        this.onNewElementCreated
++      );
++      this.chromeEventHandler.addEventListener(
++        "devtoolsAttrModifiedOnNode",
++        this.onAttributeModifiedIntoNode
++      );
++      this.chromeEventHandler.addEventListener(
++        "devtoolsChildInsertedOnNode",
++        this.onNewChildInsertedIntoNode
++      );
++    }else {
++      // disable all node tracking by j2c
++      this._j2cTrackingNodes.map(node => {
++        node.devToolsWatchingDOMMutationsOnNode = false;
++      })
++      this._j2cTrackingNodes = [];
++      this._J2CIsEnaled = false;
++
++      this.chromeEventHandler.removeEventListener(
++        "devtoolsNewElementCreated",
++        this.onNewElementCreated
++      );
++      this.chromeEventHandler.removeEventListener(
++        "devtoolsAttrModifiedOnNode",
++        this.onAttributeModifiedIntoNode
++      );
++      this.chromeEventHandler.removeEventListener(
++        "devtoolsChildInsertedOnNode",
++        this.onNewChildInsertedIntoNode
++      );
++    }
++  }
++  // Hook for listening on Node's mutations in case user reload a page.(J2C in inspector's sidebar panel)
++  // onEnableJumpToConstructor(evt) {
++    // see onWindowCreated in window-global.js
++    // if (this._parent.isDestroyed()) {
++    //   return;
++    // }
++
++    // if (evt.inFrameSwap) {
++    //   return;
++    // }
++
++    // const window = evt.target.defaultView;
++    // if (!window) {
++    //   return;
++    // }
++
++    // if (this._J2CIsEnaled) {
++    //   console.log("isEnable is true");
++    //   return;
++    // }
++    // console.log("isEnable is false");
++    // this.global.document.devToolsWatchingDOMMutationsOnNode = true;
++  // }
++
++  /**
++  * Update mutation list in target Node
++  * @param {DOM Node} node
++  *        Target node
++  * @param {String} event
++  *        Event name
++  * @param {Array} stackTrace
++  *        Explain how this event happened
++  */
++  updateMutationLogInNode(node, eventName, stackTrace, details={}) {
++    if (!node.mutationLog) {
++      node.mutationLog = [];
++    }
++    node.mutationLog.push({
++      name: eventName,
++      stackTrace: stackTrace,
++    });
++  }
++
++  getStackTraceForNodeMutation() {
++    if (this._parent.isDestroyed()) {
++      return undefined;
++    }
++    if (!this.dbg) {
++      return undefined;
++    }
++    let frame = this.dbg.getNewestFrame();
++
++    if (!frame) {
++      return undefined;
++    }
++
++    const stackLog = [];
++    while(frame) {
++      const location = this.sourcesManager.getFrameLocation(frame);
++      const functionName = frame.script.displayName;
++      stackLog.push({
++        url: location.url,
++        sourceId: location.sourceActor.actorID,
++        line: location.line,
++        column: location.column,
++        functionName,
++      });
++      frame = frame.older;
++    }
++    return stackLog;
++  }
++
++  onNewElementCreated(evt) {
++    // we don't track node that has no frame, because this node doesn't belong to debuggee code
++    const stackTrace = this.getStackTraceForNodeMutation();
++
++    if (!stackTrace) return;
++    const node = evt.target;
++    //enable mutation obsever on this node for tracking node's mutation later
++    node.devToolsWatchingDOMMutationsOnNode = true;
++    this._j2cTrackingNodes.push(node);
++
++    //update mutationLog in DOM Node
++    this.updateMutationLogInNode(node, "Node Creation", stackTrace, {});
++  }
++
++  onNewChildInsertedIntoNode(evt) {
++    // we don't track node that has no frame, because this node doesn't belong to debuggee code
++    const stackTrace = this.getStackTraceForNodeMutation();
++    if (!stackTrace) return;
++    const node = evt.target;
++    // After appended to parent, later child'mutation will be tracking from parent node, so we will remove mutation observer on this child
++    //update mutationLog in DOM Node
++    node.devToolsWatchingDOMMutationsOnNode = false;
++    const newTrackingNodes = this._j2cTrackingNodes.filter(n => n !== node);
++    this._j2cTrackingNodes = newTrackingNodes;
++    this.updateMutationLogInNode(node.parentNode, "Childnode Insertion", stackTrace, {});
++  }
++
++  onAttributeModifiedIntoNode(evt) {
++    // we don't track node that has no frame, because this node doesn't belong to debuggee code
++    const stackTrace = this.getStackTraceForNodeMutation();
++    if (!stackTrace) return;
++    const node = evt.target;
++    //update mutationLog in DOM Node
++    this.updateMutationLogInNode(node, "Attribute Modification", stackTrace, {});
++  }
++
++  /**
+    * A function that the engine calls when a new script has been loaded.
+    *
+    * @param script Debugger.Script
+diff --git a/dom/base/Document.cpp b/dom/base/Document.cpp
+--- a/dom/base/Document.cpp
++++ b/dom/base/Document.cpp
+@@ -7,7 +7,6 @@
+ /*
+  * Base class for all our document implementations.
+  */
+-
+ #include "mozilla/dom/Document.h"
+ #include "mozilla/dom/DocumentInlines.h"
+ 
+@@ -8478,7 +8477,17 @@ already_AddRefed<Element> Document::Crea
+   if (pseudoType != PseudoStyleType::NotPseudo) {
+     elem->SetPseudoElementType(pseudoType);
+   }
+-
++  {
++    // Document* doc = aParent->OwnerDoc();
++    if (MOZ_UNLIKELY(DevToolsWatchingDOMMutationsOnNode()) &&
++        !elem->ChromeOnlyAccess()
++      ) {
++    // std::cout << DevToolsWatchingDOMMutations() << std::endl;
++          // elem->IsInComposedDoc() && !elem->ChromeOnlyAccess()
++      nsContentUtils::DispatchChromeEvent(this, elem, u"devtoolsNewElementCreated"_ns,
++                          CanBubble::eNo, Cancelable::eNo);
++    }
++  }
+   return elem.forget();
+ }
+ 
+diff --git a/dom/base/nsINode.cpp b/dom/base/nsINode.cpp
+--- a/dom/base/nsINode.cpp
++++ b/dom/base/nsINode.cpp
+@@ -222,6 +222,7 @@ nsINode::nsINode(already_AddRefed<mozill
+       mBoolFlags(0)
+ #  endif
+       ,
++      mDevToolsWatchingDOMMutationsOnNode(false),
+       mChildCount(0),
+       mPreviousOrLastSibling(nullptr),
+       mSubtreeRoot(this),
+@@ -3675,6 +3676,77 @@ void nsINode::FireNodeRemovedForChildren
+   }
+ }
+ 
++namespace {
++
++class DevToolsMutationObserverOnNode final : public nsStubMutationObserver {
++  NS_DECL_ISUPPORTS
++  NS_DECL_NSIMUTATIONOBSERVER_ATTRIBUTECHANGED
++  NS_DECL_NSIMUTATIONOBSERVER_CONTENTAPPENDED
++  NS_DECL_NSIMUTATIONOBSERVER_CONTENTINSERTED
++
++  // We handle this in nsContentUtils::MaybeFireNodeRemoved, since devtools
++  // relies on the event firing _before_ the removal happens.
++  // NS_DECL_NSIMUTATIONOBSERVER_CONTENTREMOVED
++
++  // NOTE(emilio, bug 1694627): DevTools doesn't seem to deal with character
++  // data changes right now (maybe intentionally?).
++  // NS_DECL_NSIMUTATIONOBSERVER_CHARACTERDATACHANGED
++
++  DevToolsMutationObserverOnNode() = default;
++
++ private:
++  void FireEvent(nsINode* aTarget, const nsAString& aType);
++
++  ~DevToolsMutationObserverOnNode() = default;
++};
++
++NS_IMPL_ISUPPORTS(DevToolsMutationObserverOnNode, nsIMutationObserver)
++
++void DevToolsMutationObserverOnNode::FireEvent(nsINode* aTarget,
++                                         const nsAString& aType) {
++  (new AsyncEventDispatcher(aTarget, aType, CanBubble::eNo,
++                            ChromeOnlyDispatch::eYes, Composed::eYes))
++      ->RunDOMEventWhenSafe();
++}
++
++void DevToolsMutationObserverOnNode::AttributeChanged(Element* aElement,
++                                                int32_t aNamespaceID,
++                                                nsAtom* aAttribute,
++                                                int32_t aModType,
++                                                const nsAttrValue* aOldValue) {
++  FireEvent(aElement, u"devtoolsAttrModifiedOnNode"_ns);
++}
++
++void DevToolsMutationObserverOnNode::ContentAppended(nsIContent* aFirstNewContent) {
++  for (nsIContent* c = aFirstNewContent; c; c = c->GetNextSibling()) {
++    ContentInserted(c);
++  }
++}
++
++void DevToolsMutationObserverOnNode::ContentInserted(nsIContent* aChild) {
++  FireEvent(aChild, u"devtoolsChildInsertedOnNode"_ns);
++}
++
++static StaticRefPtr<DevToolsMutationObserverOnNode> sDevToolsMutationObserverOnNode;
++
++}  // namespace
++
++void nsINode::SetDevToolsWatchingDOMMutationsOnNode(bool aValue) {
++  if (mDevToolsWatchingDOMMutationsOnNode == aValue) {
++    return;
++  }
++  mDevToolsWatchingDOMMutationsOnNode = aValue;
++  if (aValue) {
++    if (MOZ_UNLIKELY(!sDevToolsMutationObserverOnNode)) {
++      sDevToolsMutationObserverOnNode = new DevToolsMutationObserverOnNode();
++      ClearOnShutdown(&sDevToolsMutationObserverOnNode);
++    }
++    AddMutationObserver(sDevToolsMutationObserverOnNode);
++  } else if (sDevToolsMutationObserverOnNode) {
++    RemoveMutationObserver(sDevToolsMutationObserverOnNode);
++  }
++}
++
+ NS_IMPL_ISUPPORTS(nsNodeWeakReference, nsIWeakReference)
+ 
+ nsNodeWeakReference::nsNodeWeakReference(nsINode* aNode)
+diff --git a/dom/base/nsINode.h b/dom/base/nsINode.h
+--- a/dom/base/nsINode.h
++++ b/dom/base/nsINode.h
+@@ -1202,6 +1202,11 @@ class nsINode : public mozilla::dom::Eve
+ 
+   mozilla::SafeDoublyLinkedList<nsIMutationObserver>* GetMutationObservers();
+ 
++  bool DevToolsWatchingDOMMutationsOnNode() const {
++    return mDevToolsWatchingDOMMutationsOnNode;
++  }
++  void SetDevToolsWatchingDOMMutationsOnNode(bool aValue);
++
+   /**
+    * Helper methods to access ancestor node(s) of type T.
+    * The implementations of the methods are in mozilla/dom/AncestorIterator.h.
+@@ -2325,6 +2330,9 @@ class nsINode : public mozilla::dom::Eve
+   // MOZ_OWNING_REF.
+   nsINode* MOZ_OWNING_REF mParent;
+ 
++  //boolean flag for DevtoolsMutationObserverOnNode to listen on node mutation in Devtools
++  bool mDevToolsWatchingDOMMutationsOnNode;
++
+  private:
+ #ifndef BOOL_FLAGS_ON_WRAPPER_CACHE
+   // Boolean flags.
+diff --git a/dom/webidl/Node.webidl b/dom/webidl/Node.webidl
+--- a/dom/webidl/Node.webidl
++++ b/dom/webidl/Node.webidl
+@@ -113,6 +113,8 @@ interface Node : EventTarget {
+   readonly attribute Node? flattenedTreeParentNode;
+   [ChromeOnly, Pure, BinaryName="isInNativeAnonymousSubtree"]
+   readonly attribute boolean isNativeAnonymous;
++  [ChromeOnly]
++  attribute boolean devToolsWatchingDOMMutationsOnNode;
+ 
+   // Maybe this would be useful to authors? https://github.com/whatwg/dom/issues/826
+   [Func="IsChromeOrUAWidget", Pure, BinaryName="containingShadow"]
